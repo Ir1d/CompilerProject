@@ -14,12 +14,25 @@ void logInfo(std::string c) {
   std::cerr << "\033[1;32m[info]: " << c << "\033[0m\n";
 }
 
+void exampleUsage(json j) {
+  logInfo("file name: " + j["name"].get<std::string>());
+  for (auto v : j["ins"]) {
+    logInfo(" [ins] " + v.get<std::string>());
+  }
+  for (auto v : j["outs"]) {
+    logInfo(" [outs] " + v.get<std::string>());
+  }
+  logInfo("data type: " + j["data_type"].get<std::string>());
+  logInfo("kernel: " + j["kernel"].get<std::string>());
+}
+
 void solveExample() {
   logInfo("Generating Example");
   std::ifstream i("./cases/example.json");
   json j;
   i >> j;
   std::string outputFileName = j["name"];
+  exampleUsage(j);
   std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
   // ofile << "#include \"../run.h\"\n\n";
   // ofile << "void kernel_example(float (&B)[32][16], float (&C)[32][16], float
