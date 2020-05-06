@@ -19,3 +19,6 @@ jobs:
       run: cd build && make -j 4
     - name: test
       run: cd build/test && ./gemm && ./conv2d
+    - name: test testcases
+      run: cd build/project1/ && ./test1
+
