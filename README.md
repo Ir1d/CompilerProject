@@ -1,3 +1,17 @@
+## Misc
+
+我们的 solution 在 [mysolution.cc](./project1/solution/mysolution.cc)
+
+[Q.md](./Q.md) 是我们自己造的 testcase
+
+Overleaf 上的 project report 地址： https://www.overleaf.com/1833157533mmyckckhwsrp
+
+## Change Log
+- [5.6] 引入 json 库
+- [5.6] 将 testcase 的测试也加入 Github actions
+
+* * *
+
 ![Build](https://github.com/pku-compiler-design-spring/CompilerProject-2020Spring-Part1/workflows/C/C++%20CI/badge.svg?branch=master)
 
 ## Code Generation Compiler
