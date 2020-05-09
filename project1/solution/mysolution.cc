@@ -43,13 +43,6 @@ std::vector<std::string> split(const std::string &s, char delim) {
   return elems;
 }
 
-template <typename T, typename P>
-T remove_if(T beg, T end, P pred) {
-  T dest = beg;
-  for (T itr = beg; itr != end; ++itr)
-    if (!pred(*itr)) *(dest++) = *itr;
-  return dest;
-}
 }  // namespace xdj_helper_function
 using namespace xdj_helper_function;
 
@@ -107,6 +100,16 @@ struct node {
   }
 };
 
+void printList(const std::vector<std::vector<std::vector<node> > > &tokenList) {
+  for (auto v : tokenList) {
+    logInfo("Side");
+    for (auto ss : v) {
+      logInfo("Group");
+      for (auto t : ss) logInfo(t.s);
+    }
+  }
+}
+
 std::vector<node> parseStringIntoTokens(const std::string &right) {
   // std::vector<std::string> ss = split(kernel, '=');
   // // std::cout << ss[0];
@@ -153,19 +156,44 @@ std::vector<node> parseStringIntoTokens(const std::string &right) {
   return tokenList;
 }
 
-std::vector<std::vector<node> > parseKernel(const std::string &kernel) {
-  std::vector<std::vector<node> > allTokens;
+std::vector<std::vector<node> > splitGroup(std::vector<node> li) {
+  int n = li.size();
+  int depth = 0, prev = 0;
+  std::vector<std::vector<node> > res;
+  for (int i = 0; i < n; ++i) {
+    if (li[i].type == 0 && li[i].s[0] == '(') ++depth;
+    if (li[i].type == 0 && li[i].s[0] == ')') --depth;
+    if (depth == 0) {
+      if (li[i].type == 0 && (li[i].s[0] == '+' || li[i].s[0] == '-')) {
+        // group 1
+        res.push_back(std::vector<node>(li.begin() + prev, li.begin() + i));
+        // delimeter
+        res.push_back(std::vector<node>(li.begin() + i, li.begin() + i + 1));
+        // next group
+        prev = i + 1;
+      }
+    }
+  }
+  res.push_back(std::vector<node>(li.begin() + prev, li.end()));
+  return res;
+}
+
+std::vector<std::vector<std::vector<node> > > parseKernel(
+    const std::string &kernel) {
+  std::vector<std::vector<std::vector<node> > > allTokens;
   std::vector<std::string> ss = split(kernel, ';');
   for (auto statement : ss) {
     std::cerr << statement << "\n";
     std::vector<std::string> hs = split(statement, '=');
     // lhs
     assert(hs.size() == 2);
-    allTokens.push_back(parseStringIntoTokens(hs[0]));
+    allTokens.push_back({parseStringIntoTokens(hs[0])});
     // rhs
-    allTokens.push_back(parseStringIntoTokens(hs[1]));
+    allTokens.push_back(splitGroup(parseStringIntoTokens(hs[1])));
+    // allTokens.push_back({parseStringIntoTokens(hs[1])});
   }
-  // vectors in the order of lhs, rhs, lhs, rhs
+  // vectors in the order of lhs, rhs, lhs, rhs...
+
   return allTokens;
 }
 
@@ -182,15 +210,11 @@ void solveExample() {
   // "
   //          "(&A)[32][16]) {}";
 
-  std::vector<std::vector<node> > tokenList =
+  std::vector<std::vector<std::vector<node> > > tokenList =
       parseKernel(j["kernel"].get<std::string>());
 
 #ifdef LOCAL
-  for (auto v : tokenList) {
-    for (auto ss : v) {
-      logInfo(ss.s);
-    }
-  }
+  printList(tokenList);
 #endif LOCAL
 
   std::string cheat_src =
@@ -221,15 +245,11 @@ void solveCase(int idx) {
   i >> j;
   std::string outputFileName = j["name"];
 
-  std::vector<std::vector<node> > tokenList =
+  std::vector<std::vector<std::vector<node> > > tokenList =
       parseKernel(j["kernel"].get<std::string>());
 
 #ifdef LOCAL
-  for (auto v : tokenList) {
-    for (auto ss : v) {
-      logInfo(ss.s);
-    }
-  }
+  printList(tokenList);
 #endif LOCAL
   // std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
 }
