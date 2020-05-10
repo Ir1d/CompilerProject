@@ -137,6 +137,7 @@ struct node {
       for (auto s : v) {
         std::cerr << s.s << " ";
       }
+      std::cerr << "\n";
     }
     std::cerr << "\n";
 #endif LOCAL
