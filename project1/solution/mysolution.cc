@@ -55,7 +55,7 @@ struct node {
   // type == 1 : number
   // type == 2 : matrix
   // for type 2 only
-  std::vector<int> range;
+  std::vector<size_t> range;
   // NOTE: certain matrix has no param (param size is 0)
   std::vector<std::string> param;
   std::string name;
@@ -132,7 +132,7 @@ std::vector<node> parseStringIntoTokens(const std::string &right) {
       tokenList.push_back(node(right.substr(i, 1), 0));
     } else if (right[i] >= '0' && right[i] <= '9') {
       int end = i;
-      while (end < n && right[end] >= '0' && right[end] <= '9') ++end;
+      while (end < n && ((right[end] >= '0' && right[end] <= '9') || right[end] == '.')) ++end;
       // [i, end)
       tokenList.push_back(node(right.substr(i, end - i), 1));
       // printf("%d %d\n", i, end);
