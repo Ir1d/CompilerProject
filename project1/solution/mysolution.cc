@@ -54,17 +54,51 @@ struct node {
   // NOTE: negative numebr "-2" considered as "-", "2"
   // type == 1 : number
   // type == 2 : matrix
+  // type == 3 : param var
   // for type 2 only
   std::vector<size_t> range;
   // NOTE: certain matrix has no param (param size is 0)
-  std::vector<std::string> param;
+  std::vector<std::vector<node> > param;
   std::string name;
   inline node(const std::string &T, int type = -1) : s(T), type(type) {
     if (type == 2) parse();
   }
+  std::vector<node> parseParam(std::string param) {
+    std::vector<node> tokenList;
+    int n = param.length();
+    const std::vector<std::string> myList{"(", ")", "+", "-", "*", "%"};
+    for (int i = 0; i < n; ++i) {
+      if (param[i] == ' ') continue;
+      if (param[i] == ';') continue;
+      if (std::find(std::begin(myList), std::end(myList), param.substr(i, 1)) !=
+          std::end(myList))
+        tokenList.push_back(node(param.substr(i, 1), 0));
+      else if (param[i] == '/' && param[i + 1] == '/') {
+        tokenList.push_back(node(param.substr(i, 2), 0));
+        ++i;
+      } else if (param[i] == '/') {
+        tokenList.push_back(node(param.substr(i, 1), 0));
+      } else if (param[i] >= '0' && param[i] <= '9') {
+        int end = i;
+        while (end < n &&
+               ((param[end] >= '0' && param[end] <= '9') || param[end] == '.'))
+          ++end;
+        // [i, end)
+        tokenList.push_back(node(param.substr(i, end - i), 1));
+        // printf("%d %d\n", i, end);
+        assert(i != end);
+        i = end - 1;
+      } else {
+        // var, things like: i, j, k
+        tokenList.push_back(node(param.substr(i, 1), 3));
+      }
+    }
+    return tokenList;
+  }
   void parse() {
     int n = s.length();
     int rangeStart = 0;
+    std::vector<std::string> paramStr;
     for (int i = 0; i < n; ++i) {
       if (s[i] == '<') {
         name = s.substr(0, i);
@@ -86,7 +120,10 @@ struct node {
           // remove space
           params.erase(std::remove(params.begin(), params.end(), ' '),
                        params.end());
-          param = split(params, ',');
+          paramStr = split(params, ',');
+          for (auto v : paramStr) {
+            param.push_back(parseParam(v));
+          }
         }
       }
     }
@@ -94,7 +131,13 @@ struct node {
     std::cerr << "parse results:\n";
     for (auto v : range) std::cerr << v << " ";
     std::cerr << "\n";
-    for (auto v : param) std::cerr << v << " ";
+    std::cerr << "params:\n";
+    for (auto v : param) {
+      // std::cerr << v << " ";
+      for (auto s : v) {
+        std::cerr << s.s << " ";
+      }
+    }
     std::cerr << "\n";
 #endif LOCAL
   }
@@ -132,7 +175,9 @@ std::vector<node> parseStringIntoTokens(const std::string &right) {
       tokenList.push_back(node(right.substr(i, 1), 0));
     } else if (right[i] >= '0' && right[i] <= '9') {
       int end = i;
-      while (end < n && ((right[end] >= '0' && right[end] <= '9') || right[end] == '.')) ++end;
+      while (end < n &&
+             ((right[end] >= '0' && right[end] <= '9') || right[end] == '.'))
+        ++end;
       // [i, end)
       tokenList.push_back(node(right.substr(i, end - i), 1));
       // printf("%d %d\n", i, end);
