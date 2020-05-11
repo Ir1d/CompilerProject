@@ -247,10 +247,14 @@ void IRPrinter::visit(Ref<const IfThenElse> op) {
     (op->true_case).visit_stmt(this);
     exit();
     print_indent();
+    if (op->false_case.get()) {
     oss << "} else {\n";
     enter();
     (op->false_case).visit_stmt(this);
     exit();
+    } else {
+        oss << "}\n";
+    }
     print_indent();
     oss << "}\n";
 }
