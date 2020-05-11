@@ -10,6 +10,13 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
+#include <IR.h>
+#include <IRMutator.h>
+#include <IRPrinter.h>
+#include <stack>
+#include <deque>
+#include <map>
+#include <utility>
 using json = nlohmann::json;
 namespace xdj_helper_function {
 void logInfo(std::string c) {
@@ -243,6 +250,314 @@ std::vector<std::vector<std::vector<node> > > parseKernel(
   return allTokens;
 }
 
+namespace lym_helpers {
+using namespace Boost::Internal;
+
+namespace operators {
+enum class OP {BRA, KET, PLUS, MINUS, TIMES, DIV, MOD, UNA_PLUS, UNA_MINUS};
+enum class PREC { NONE, PLUS, TIMES, UNARY_PLUS };
+enum class ASSOC {LEFT, RIGHT, NONE};
+bool operator<(PREC prec1, PREC prec2) {
+  return static_cast<int>(prec1) < static_cast<int>(prec2);
+}
+OP get_op(const std::string &s, bool unary=false) {
+  switch (s[0]) {
+    case '(': return OP::BRA;
+    case ')': return OP::KET;
+    case '+': return unary? OP::UNA_PLUS : OP::PLUS;
+    case '-': return unary? OP::UNA_MINUS : OP::MINUS;
+    case '*': return OP::TIMES;
+    case '/': return OP::DIV; // "//" is also included here
+    case '%': return OP::MOD;
+    default: assert(false);
+  }
+}
+PREC get_precedence(OP o) {
+  switch (o) {
+    case OP::BRA:
+    case OP::KET:
+      return PREC::NONE;
+    case OP::UNA_MINUS:
+    case OP::UNA_PLUS:
+      return PREC::UNARY_PLUS;
+    case OP::PLUS:
+    case OP::MINUS:
+      return PREC::PLUS;
+    case OP::TIMES:
+    case OP::DIV:
+    case OP::MOD:
+      return PREC::TIMES;
+    default: assert(false);
+  }
+}
+ASSOC get_assoc(PREC prec) {
+  switch (prec) {
+    case PREC::NONE:
+      return ASSOC::NONE;
+    case PREC::PLUS:
+    case PREC::TIMES:
+      return ASSOC::LEFT;
+    case PREC::UNARY_PLUS:
+      return ASSOC::RIGHT;
+    default: assert(false);
+  }
+}
+ASSOC get_assoc(OP o) {
+  return get_assoc(get_precedence(o));
+}
+}
+static Type index_type = Type::int_scalar(32), data_type = Type::float_scalar(32);
+struct indices {
+  std::map<std::string, Expr> name2index;
+  std::vector<std::pair<Expr, size_t>> contract;
+  bool global;
+  indices(bool global_ = false): global(global_) { }
+  Expr gen_contract() const {
+    Type type = Type::int_scalar(32);
+    std::stack<Expr> result;
+    result.emplace(IntImm::make(type, 1));
+    auto add_constract = [&](Expr c_) {
+      Expr t = Binary::make(type, BinaryOpType::And, result.top(), c_);
+      result.pop();
+      result.emplace(std::move(t));
+    };
+    for (auto _: contract) {
+      Expr expr = _.first;
+      add_constract(Compare::make(type, CompareOpType::GE, expr, IntImm::make(type, 0)));
+      add_constract(Compare::make(type, CompareOpType::LT, expr, IntImm::make(type, _.second)));
+    }
+    return result.top();
+  }
+  std::vector<Expr> gen_indices(const indices &other) const {
+    std::vector<Expr> result;
+    for (const auto &_ : name2index)
+      result.emplace_back(_.second);
+    for (const auto &_ : other.name2index)
+      result.emplace_back(_.second);
+    return result;
+  }
+  Expr find_index(const std::string &name, const indices &global_subscript) {
+    auto itr = global_subscript.name2index.find(name);
+    if (itr != global_subscript.name2index.end()) return itr->second;
+    itr = name2index.find(name);
+    if (itr != name2index.end()) return itr->second;
+    Expr dom = Dom::make(index_type, 0, 0);
+    Expr index = Index::make(index_type, name, dom, global ? IndexType::Spatial : IndexType::Reduce);
+    name2index.emplace(name, index);
+    return index;
+  }
+};
+struct stacks {
+  std::stack<Expr> exprs;
+  std::stack<operators::OP> ops;
+  std::stack<bool> need_op;
+  const indices &global_subscript;
+  stacks(const indices &global_): global_subscript(global_) {
+    need_op.push(false);
+  }
+  std::deque<Expr> get_args(size_t count = 2) {
+    std::deque<Expr> result;
+    for (size_t i = 0; i < count; ++i) {
+      result.emplace_front(exprs.top());
+      exprs.pop();
+    }
+    return result;
+  }
+  void build_node(operators::OP o) {
+    using namespace operators;
+    switch (o) {
+#define LYM_BINARY(TYPE, TARGET_TYPE) \
+      case OP::TYPE: { \
+        auto args = get_args(2); \
+        exprs.emplace(Binary::make(data_type, BinaryOpType::TARGET_TYPE, args[0], args[1])); \
+        return; \
+      }
+      LYM_BINARY(PLUS, Add)
+      LYM_BINARY(MINUS, Sub)
+      LYM_BINARY(TIMES, Mul)
+      LYM_BINARY(DIV, Div)
+      LYM_BINARY(MOD, Mod)
+#undef LYM_BINARY
+      case OP::UNA_PLUS:
+        return;
+      case OP::UNA_MINUS: {
+        auto args = get_args(1);
+        exprs.emplace(Unary::make(data_type, UnaryOpType::Neg, args[0]));
+        return;
+      }
+      default: assert(false);
+    }
+  }
+  void add_new_op(operators::OP op) {
+    using namespace operators;
+    PREC prec = get_precedence(op);
+    ASSOC assoc = get_assoc(prec);
+    switch (assoc) {
+      case ASSOC::NONE:
+        switch (op) {
+          case OP::BRA:
+            ops.push(OP::BRA);
+            need_op.top() = true;
+            need_op.push(false);
+            return;
+          case OP::KET:
+            for (; ops.top() != OP::BRA; ops.pop())
+              build_node(ops.top());
+            ops.pop();
+            need_op.pop();
+            return;
+          default: assert(false);
+        }
+      case ASSOC::LEFT:
+        for (; get_precedence(ops.top()) >= prec; ops.pop())
+          build_node(ops.top());
+        ops.push(op);
+        need_op.top() = false;
+        return;
+      case ASSOC::RIGHT:
+        for (; get_precedence(ops.top()) > prec; ops.pop())
+          build_node(ops.top());
+        ops.push(op);
+        need_op.top() = false;
+        return;
+      default: assert(false);
+    }
+  }
+  void read_expr(Expr e) {
+    exprs.emplace(e);
+    need_op.top() = true;
+    return;
+  }
+  void read_token(const node &n, indices &my_subscript) {
+    using namespace operators;
+    switch (n.type) {
+      case 0: { // op
+        add_new_op(get_op(n.s, !need_op.top()));
+        break;
+      }
+      case 1: // number
+        read_expr(build_number(n));
+        return;
+      case 2: // matrix
+        read_expr(build_matrix(n, my_subscript, global_subscript));
+        return;
+      case 3: // index
+        read_expr(my_subscript.find_index(n.s, global_subscript));
+        return;
+      default: assert(false);
+    }
+  }
+  static Expr build_number(const node &n, bool gen_float = true) {
+    assert(n.type == 1);
+    if (gen_float) return FloatImm::make(data_type, std::stod(n.s));
+    else return IntImm::make(index_type, std::stoll(n.s));
+  }
+  static Expr build_matrix(const node &n, indices &my_subscript, const indices &global_subscript) {
+    assert(n.type == 2);
+    std::vector<Expr> args;
+    auto itr1 = n.param.begin();
+    auto itr2 = n.range.begin();
+    while (itr1 != n.param.end() && itr2 != n.range.end()) {
+      auto expr = parse_group(*itr1, my_subscript, global_subscript);
+      args.emplace_back(expr);
+      my_subscript.contract.emplace_back(expr, *itr2);
+      itr1++;
+      itr2++;
+    }
+    return Var::make(data_type, n.name, args, n.range);
+  }
+  static Expr parse_group(const std::vector<node> &nodes, indices &my_subscript, const indices &global_subscript) {
+    stacks s{global_subscript};
+    s.read_token(node("(", 0), my_subscript);
+    for (const node &n : nodes)
+      s.read_token(n, my_subscript);
+    s.read_token(node(")", 0), my_subscript);
+    assert(s.exprs.size() == 1);
+    return s.exprs.top();
+  }
+};
+struct statement_parser {
+  indices global_subscript;
+  Expr lhs;
+  size_t tempvar_upper_bound = 0;
+  std::vector<std::vector<node>> rhs;
+  statement_parser(const std::vector<std::vector<node>> &lhs_, const std::vector<std::vector<node>> &rhs_):
+    global_subscript(true), lhs(stacks::build_matrix(lhs_[0][0], global_subscript, global_subscript)), rhs(rhs_) {
+    assert(lhs_.size() == 1);
+    assert(lhs_[0].size() == 1);
+  }
+  Expr new_tempvar() {
+    struct IR_Var_name_changer: public IRMutator {
+      std::string new_name;
+      IR_Var_name_changer(const std::string &new_name_): new_name(new_name_) { }
+      virtual Expr visit(Ref<const Var> v) {
+        return Var::make(v->type(), new_name, v->args, v->shape);
+      }
+    };
+    std::string s = "tmp";
+    s += std::to_string(tempvar_upper_bound);
+    tempvar_upper_bound++;
+    IR_Var_name_changer name_changer{s};
+    return name_changer.mutate(lhs);
+  }
+  std::vector<Stmt> parse() {
+    stacks s{global_subscript};
+    indices _subscript;
+    std::vector<std::tuple<Expr, Stmt, indices>> stmts;
+    std::vector<Stmt> result;
+    s.read_token(node("(", 0), _subscript);
+    for (const std::vector<node> &group : rhs) {
+      if (group.size() == 1 && (group[0].s == "+" || group[0].s == "-"))
+        s.read_token(node(group[0].s, 0), _subscript);
+      else {
+        stacks s_{global_subscript};
+        indices my_subscript;
+        Expr rhs = stacks::parse_group(group, my_subscript, global_subscript), lhs = new_tempvar();
+        Stmt stmt = Move::make(lhs, Binary::make(data_type, BinaryOpType::Add, lhs, rhs), MoveType::MemToMem);
+        stmts.emplace_back(lhs, stmt, my_subscript);
+        s.read_expr(lhs);
+      }
+    }
+    s.read_token(node(")", 0), _subscript);
+    assert(s.exprs.size() == 1);
+    Stmt M = Move::make(lhs, s.exprs.top(), MoveType::MemToMem);
+    for (const auto &_ : stmts) {
+      const indices &subscript = std::get<2>(_);
+      Stmt ifed = IfThenElse::make(subscript.gen_contract(), std::get<1>(_), Stmt());
+      result.emplace_back(LoopNest::make(global_subscript.gen_indices({true}),
+        {IfThenElse::make(global_subscript.gen_contract(), 
+          Move::make(std::get<0>(_), IntImm::make(data_type, 0), MoveType::MemToMem), Stmt())}));
+      result.emplace_back(LoopNest::make(subscript.gen_indices(global_subscript), {ifed}));
+    }
+    Stmt ifed = IfThenElse::make(global_subscript.gen_contract(), M, Stmt());
+    result.emplace_back(LoopNest::make(global_subscript.gen_indices({}), {ifed}));
+    return result;
+  }
+};
+} // namespace lym_helpers
+
+Boost::Internal::Group kernel2IR(
+    const std::vector<std::vector<std::vector<node>>> &tokenList,
+    const std::string &function_name) {
+  using namespace Boost::Internal;
+  std::vector<Expr> inputs, outputs;
+  std::vector<Stmt> stmts;
+  auto itr = tokenList.begin();
+  while (itr != tokenList.end()) {
+    auto itr2 = std::next(itr);
+    lym_helpers::statement_parser parser{*itr, *itr2};
+    for (auto stmt: parser.parse())
+      stmts.emplace_back(stmt);
+    itr = std::next(itr2);
+  }
+  auto kernel = Kernel::make(function_name, inputs, outputs, stmts, KernelType::CPU);
+#ifdef LOCAL
+  IRPrinter printer;
+  logInfo(printer.print(kernel));
+#endif
+  return kernel;
+}
+
 void solveExample() {
   logInfo("Generating Example");
   std::ifstream i("./cases/example.json");
@@ -263,6 +578,9 @@ void solveExample() {
   printList(tokenList);
 #endif LOCAL
 
+  Boost::Internal::IRPrinter printer;
+  std::string src = printer.print(kernel2IR(tokenList, j["name"]));
+  
   std::string cheat_src =
       "// this is supposed to be generated by codegen tool\n\
 #include \"../run.h\"\n\
@@ -297,6 +615,8 @@ void solveCase(int idx) {
 #ifdef LOCAL
   printList(tokenList);
 #endif LOCAL
+  Boost::Internal::IRPrinter printer;
+  std::string src = printer.print(kernel2IR(tokenList, j["name"]));
   // std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
 }
 int main() {
