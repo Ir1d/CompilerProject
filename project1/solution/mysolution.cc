@@ -516,9 +516,42 @@ struct statement_parser {
   size_t tempvar_upper_bound = 0;
   std::vector<std::vector<node>> rhs;
   statement_parser(const std::vector<std::vector<node>> &lhs_, const std::vector<std::vector<node>> &rhs_):
-    global_subscript(true), lhs(stacks::build_matrix(lhs_[0][0], global_subscript, global_subscript)), rhs(rhs_) {
+      global_subscript(true), lhs(get_lhs(lhs_[0][0], global_subscript)), rhs(rhs_) {
     assert(lhs_.size() == 1);
     assert(lhs_[0].size() == 1);
+  }
+  static Expr get_lhs(const node &n, indices &global_subscript) {
+    Expr e = stacks::build_matrix(n, global_subscript, global_subscript);
+    struct subscript_fix: public IRVisitor {
+      std::map<std::string, size_t> name2size;
+      size_t t = 0;
+      virtual void visit(Ref<const Var> v) {
+        auto itr1 = v->shape.begin();
+        auto itr2 = v->args.begin();
+        for (; itr1 != v->shape.end() && itr2 != v->args.end(); itr1++, itr2++) {
+          t = *itr1;
+          itr2->visit_expr(this);
+        }
+      }
+      virtual void visit(Ref<const Index> i) {
+        auto itr = name2size.find(i->name);
+        if (itr == name2size.end())
+          itr = name2size.emplace(i->name, 0).first;
+        itr->second = std::max(itr->second, t);
+      }
+    };
+    subscript_fix fixer;
+    e.visit_expr(&fixer);
+    global_subscript.name2index.clear();
+    for (const auto &p : fixer.name2size)
+      global_subscript.name2index.emplace(
+        p.first,
+        Index::make(
+          index_type,
+          p.first,
+          Dom::make(index_type, IntImm::make(index_type, 0), IntImm::make(index_type, p.second)),
+          IndexType::Spatial));
+    return global_subscript.replace_indices(e);
   }
   Expr new_tempvar() {
     struct IR_Var_name_changer: public IRMutator {
