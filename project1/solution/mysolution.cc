@@ -253,6 +253,14 @@ std::vector<std::vector<std::vector<node> > > parseKernel(
 namespace lym_helpers {
 using namespace Boost::Internal;
 
+template <class T1, class T2>
+void map_add_2_into_1(std::map<T1, T2> &m1, const std::map<T1, T2> &m2) {
+  for (const auto &p : m2) {
+    auto itr = m1.find(p.first);
+    if (itr != m1.end()) continue;
+    m1.emplace(p);
+  }
+}
 namespace operators {
 enum class OP {BRA, KET, PLUS, MINUS, TIMES, DIV, MOD, UNA_PLUS, UNA_MINUS};
 enum class PREC { NONE, PLUS, TIMES, UNARY_PLUS };
@@ -310,6 +318,7 @@ static Type index_type = Type::int_scalar(32), data_type = Type::float_scalar(32
 struct indices {
   std::map<std::string, Expr> name2index;
   std::vector<std::pair<Expr, size_t>> contract;
+  std::map<std::string, Expr> matrices;
   bool global;
   indices(bool global_ = false): global(global_) { }
   Expr gen_contract() const {
@@ -345,6 +354,24 @@ struct indices {
     Expr index = Index::make(index_type, name, dom, global ? IndexType::Spatial : IndexType::Reduce);
     name2index.emplace(name, index);
     return index;
+  }
+  bool add_matrix(const std::string &name, Expr e) {
+    struct args_replacer: public IRMutator {
+      virtual Expr visit(Ref<const Var> v) {
+        std::vector<Expr> Is;
+        for (size_t shape: v->shape)
+          Is.emplace_back(Index::make(
+            index_type,
+            "I",
+            Dom::make(index_type, IntImm::make(index_type, 0), IntImm::make(index_type, shape)),
+            IndexType::Spatial));
+        return Var::make(v->type(), v->name, Is, v->shape);
+      }
+};
+    auto itr = matrices.find(name);
+    if (itr != matrices.end()) return false;
+    matrices.emplace(name, args_replacer{}.mutate(e));
+    return true;
   }
 };
 struct stacks {
@@ -464,7 +491,9 @@ struct stacks {
       itr1++;
       itr2++;
     }
-    return Var::make(data_type, n.name, args, n.range);
+    Expr matrix = Var::make(data_type, n.name, args, n.range);
+    my_subscript.add_matrix(n.name, matrix);
+    return matrix;
   }
   static Expr parse_group(const std::vector<node> &nodes, indices &my_subscript, const indices &global_subscript) {
     stacks s{global_subscript};
@@ -500,7 +529,7 @@ struct statement_parser {
     IR_Var_name_changer name_changer{s};
     return name_changer.mutate(lhs);
   }
-  std::vector<Stmt> parse() {
+  std::pair<std::vector<Stmt>, std::map<std::string, Expr>> parse() {
     stacks s{global_subscript};
     indices _subscript;
     std::vector<std::tuple<Expr, Stmt, indices>> stmts;
@@ -523,34 +552,46 @@ struct statement_parser {
     Stmt M = Move::make(lhs, s.exprs.top(), MoveType::MemToMem);
     for (const auto &_ : stmts) {
       const indices &subscript = std::get<2>(_);
+      map_add_2_into_1(global_subscript.matrices, subscript.matrices);
       Stmt ifed = IfThenElse::make(subscript.gen_contract(), std::get<1>(_), Stmt());
       result.emplace_back(LoopNest::make(global_subscript.gen_indices({true}),
         {IfThenElse::make(global_subscript.gen_contract(), 
           Move::make(std::get<0>(_), IntImm::make(data_type, 0), MoveType::MemToMem), Stmt())}));
       result.emplace_back(LoopNest::make(subscript.gen_indices(global_subscript), {ifed}));
     }
+    map_add_2_into_1(global_subscript.matrices, _subscript.matrices);
     Stmt ifed = IfThenElse::make(global_subscript.gen_contract(), M, Stmt());
     result.emplace_back(LoopNest::make(global_subscript.gen_indices({}), {ifed}));
-    return result;
+    return {result, global_subscript.matrices};
   }
 };
 } // namespace lym_helpers
 
 Boost::Internal::Group kernel2IR(
     const std::vector<std::vector<std::vector<node>>> &tokenList,
-    const std::string &function_name) {
+    const std::string &function_name,
+    const std::vector<std::string> &inputs,
+    const std::vector<std::string> &outputs) {
   using namespace Boost::Internal;
-  std::vector<Expr> inputs, outputs;
   std::vector<Stmt> stmts;
+  std::map<std::string, Expr> matrices;
   auto itr = tokenList.begin();
   while (itr != tokenList.end()) {
     auto itr2 = std::next(itr);
     lym_helpers::statement_parser parser{*itr, *itr2};
-    for (auto stmt: parser.parse())
+    auto t = parser.parse();
+    for (auto stmt: t.first)
       stmts.emplace_back(stmt);
+    lym_helpers::map_add_2_into_1(matrices, t.second);
     itr = std::next(itr2);
   }
-  auto kernel = Kernel::make(function_name, inputs, outputs, stmts, KernelType::CPU);
+  auto string2exprs = [&](const std::vector<std::string> &strs) {
+    std::vector<Expr> result;
+    for (const auto &s : strs)
+      result.emplace_back(matrices[s]);
+    return result;
+  };
+  auto kernel = Kernel::make(function_name, string2exprs(inputs), string2exprs(outputs), stmts, KernelType::CPU);
 #ifdef LOCAL
   IRPrinter printer;
   logInfo(printer.print(kernel));
@@ -579,7 +620,7 @@ void solveExample() {
 #endif LOCAL
 
   Boost::Internal::IRPrinter printer;
-  std::string src = printer.print(kernel2IR(tokenList, j["name"]));
+  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"]));
   
   std::string cheat_src =
       "// this is supposed to be generated by codegen tool\n\
@@ -616,7 +657,7 @@ void solveCase(int idx) {
   printList(tokenList);
 #endif LOCAL
   Boost::Internal::IRPrinter printer;
-  std::string src = printer.print(kernel2IR(tokenList, j["name"]));
+  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"]));
   // std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
 }
 int main() {
