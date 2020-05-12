@@ -407,8 +407,8 @@ struct stacks {
   std::stack<Expr> exprs;
   std::stack<operators::OP> ops;
   std::stack<bool> need_op;
-  bool parsing_index;
   const indices &global_subscript;
+  bool parsing_index;
   stacks(const indices &global_, bool parsing_index_ = false):
       global_subscript(global_), parsing_index(parsing_index_) {
     need_op.push(false);
