@@ -367,7 +367,7 @@ struct indices {
             IndexType::Spatial));
         return Var::make(v->type(), v->name, Is, v->shape);
       }
-};
+    };
     auto itr = matrices.find(name);
     if (itr != matrices.end()) return false;
     matrices.emplace(name, args_replacer{}.mutate(e));
@@ -378,8 +378,10 @@ struct stacks {
   std::stack<Expr> exprs;
   std::stack<operators::OP> ops;
   std::stack<bool> need_op;
+  bool parsing_index;
   const indices &global_subscript;
-  stacks(const indices &global_): global_subscript(global_) {
+  stacks(const indices &global_, bool parsing_index_ = false):
+      global_subscript(global_), parsing_index(parsing_index_) {
     need_op.push(false);
   }
   std::deque<Expr> get_args(size_t count = 2) {
@@ -390,13 +392,16 @@ struct stacks {
     }
     return result;
   }
+  Type result_type() const {
+    return parsing_index? index_type : data_type;
+  }
   void build_node(operators::OP o) {
     using namespace operators;
     switch (o) {
 #define LYM_BINARY(TYPE, TARGET_TYPE) \
       case OP::TYPE: { \
         auto args = get_args(2); \
-        exprs.emplace(Binary::make(data_type, BinaryOpType::TARGET_TYPE, args[0], args[1])); \
+        exprs.emplace(Binary::make(result_type(), BinaryOpType::TARGET_TYPE, args[0], args[1])); \
         return; \
       }
       LYM_BINARY(PLUS, Add)
@@ -409,7 +414,7 @@ struct stacks {
         return;
       case OP::UNA_MINUS: {
         auto args = get_args(1);
-        exprs.emplace(Unary::make(data_type, UnaryOpType::Neg, args[0]));
+        exprs.emplace(Unary::make(result_type(), UnaryOpType::Neg, args[0]));
         return;
       }
       default: assert(false);
@@ -463,7 +468,7 @@ struct stacks {
         break;
       }
       case 1: // number
-        read_expr(build_number(n));
+        read_expr(build_number(n, !parsing_index));
         return;
       case 2: // matrix
         read_expr(build_matrix(n, my_subscript, global_subscript));
@@ -485,7 +490,7 @@ struct stacks {
     auto itr1 = n.param.begin();
     auto itr2 = n.range.begin();
     while (itr1 != n.param.end() && itr2 != n.range.end()) {
-      auto expr = parse_group(*itr1, my_subscript, global_subscript);
+      auto expr = parse_group(*itr1, my_subscript, global_subscript, true);
       args.emplace_back(expr);
       my_subscript.contract.emplace_back(expr, *itr2);
       itr1++;
@@ -495,8 +500,8 @@ struct stacks {
     my_subscript.add_matrix(n.name, matrix);
     return matrix;
   }
-  static Expr parse_group(const std::vector<node> &nodes, indices &my_subscript, const indices &global_subscript) {
-    stacks s{global_subscript};
+  static Expr parse_group(const std::vector<node> &nodes, indices &my_subscript, const indices &global_subscript, bool parsing_index = false) {
+    stacks s{global_subscript, parsing_index};
     s.read_token(node("(", 0), my_subscript);
     for (const node &n : nodes)
       s.read_token(n, my_subscript);
@@ -526,8 +531,7 @@ struct statement_parser {
     std::string s = "tmp";
     s += std::to_string(tempvar_upper_bound);
     tempvar_upper_bound++;
-    IR_Var_name_changer name_changer{s};
-    return name_changer.mutate(lhs);
+    return IR_Var_name_changer{s}.mutate(lhs);
   }
   std::pair<std::vector<Stmt>, std::map<std::string, Expr>> parse() {
     stacks s{global_subscript};
