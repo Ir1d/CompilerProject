@@ -345,6 +345,35 @@ struct indices {
       result.emplace_back(_.second);
     return result;
   }
+  Expr replace_indices(const Expr &expr) const {
+    struct indices_replacer: public IRMutator {
+      const std::map<std::string, Expr> &name2index;
+      indices_replacer(const std::map<std::string, Expr> &name2index_): name2index(name2index_) { }
+      virtual Expr visit(Ref<const Index> i) {
+        auto itr = name2index.find(i->name);
+        if (itr == name2index.end()) return i;
+        return itr->second;
+      }
+    };
+    return indices_replacer{name2index}.mutate(expr);
+  }
+  size_t range() const {
+    struct pi_numbers: public IRVisitor {
+      size_t result = 1;
+      virtual void visit(Ref<const IntImm> i) {
+        result *= std::abs(i->value());
+      }
+      virtual void visit(Ref<const FloatImm> f) {
+        result *= std::abs(std::ceil(f->value()));
+      }
+    } pi;
+    size_t max = 1;
+    for (auto p : contract) {
+      p.first.visit_expr(&pi);
+      max = std::max(max, p.second);
+    }
+    return (pi.result + 1) * max + 10;
+  }
   Expr find_index(const std::string &name, const indices &global_subscript) {
     auto itr = global_subscript.name2index.find(name);
     if (itr != global_subscript.name2index.end()) return itr->second;
@@ -579,7 +608,20 @@ struct statement_parser {
         stacks s_{global_subscript};
         indices my_subscript;
         Expr rhs = stacks::parse_group(group, my_subscript, global_subscript), lhs = new_tempvar();
-        Stmt stmt = Move::make(lhs, Binary::make(data_type, BinaryOpType::Add, lhs, rhs), MoveType::MemToMem);
+        size_t range = my_subscript.range();
+        std::vector<std::string> names;
+        for (const auto &p : my_subscript.name2index)
+          names.emplace_back(p.first);
+        my_subscript.name2index.clear();
+        for (const auto &p : names)
+          my_subscript.name2index.emplace(
+            p,
+            Index::make(
+              index_type,
+              p,
+              Dom::make(index_type, IntImm::make(index_type, -range), IntImm::make(index_type, range)),
+              IndexType::Reduce));
+        Stmt stmt = Move::make(lhs, Binary::make(data_type, BinaryOpType::Add, lhs, my_subscript.replace_indices(rhs)), MoveType::MemToMem);
         stmts.emplace_back(lhs, stmt, my_subscript);
         s.read_expr(lhs);
       }
