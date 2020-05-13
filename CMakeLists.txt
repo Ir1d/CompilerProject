@@ -89,4 +89,4 @@ add_subdirectory(project2)
 #     ${CMAKE_CURRENT_BINARY_DIR}/jsoncpp-build
 #     EXCLUDE_FROM_ALL)
 
-target_link_libraries(${LIB_NAME} jsoncpp_lib)
+# target_link_libraries(${LIB_NAME} jsoncpp_lib)
