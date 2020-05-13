@@ -82,6 +82,7 @@ class IRPrinter : public IRVisitor {
     int indent;
     bool print_range;
     bool print_arg;
+    Expr extent;
 };
 
 }  // namespace Internal
