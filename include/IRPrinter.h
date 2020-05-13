@@ -27,6 +27,7 @@
 
 #include <string>
 #include <sstream>
+#include <vector>
 
 #include "IRVisitor.h"
 
@@ -41,6 +42,7 @@ class IRPrinter : public IRVisitor {
         indent = 0;
         print_range = false;
         print_arg = false;
+        print_all = false;
     }
     std::string print(const Expr&);
     std::string print(const Stmt&);
@@ -82,7 +84,12 @@ class IRPrinter : public IRVisitor {
     int indent;
     bool print_range;
     bool print_arg;
+    bool print_all;
     Expr extent;
+    std::vector<std::string> inname;
+    std::vector<std::string> opname;
+    std::vector<std::vector<int>> oplist;
+    std::vector<std::string> optype;
 };
 
 }  // namespace Internal
