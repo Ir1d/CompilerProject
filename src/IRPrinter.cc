@@ -23,6 +23,7 @@
 */
 
 #include "IRPrinter.h"
+#include <string.h>
 
 namespace Boost {
 
@@ -51,22 +52,26 @@ std::string IRPrinter::print(const Group &group) {
 
 
 void IRPrinter::visit(Ref<const IntImm> op) {
-    oss << "(" << op->type() << " " << op->value() << ")";
+    // oss << "(int " << op->value() << ")";
+    oss << op->value();
 }
 
 
 void IRPrinter::visit(Ref<const UIntImm> op) {
-    oss << "(" << op->type() << " " << op->value() << ")";
+    // oss << "(uint " << op->value() << ")";
+    oss << op->value();
 }
 
 
 void IRPrinter::visit(Ref<const FloatImm> op) {
-    oss << "(" << op->type() << " " << op->value() << ")";
+    // oss << "(float " << op->value() << ")";
+    oss << op->value();
 }
 
 
 void IRPrinter::visit(Ref<const StringImm> op) {
-    oss << "(" << op->type() << " " << op->value() << ")";
+    // oss << "(string " << op->value() << ")";
+    oss << op->value();
 }
 
 
@@ -162,22 +167,32 @@ void IRPrinter::visit(Ref<const Ramp> op) {
 
 
 void IRPrinter::visit(Ref<const Var> op) {
-    oss << op->name;
-    if (print_arg) {
-        oss << "<";
-        for (size_t i = 0; i < op->shape.size(); ++i) {
-            oss << op->shape[i];
-            if (i < op->shape.size() - 1) {
-                oss << ", ";
-            }
+    if(print_arg){
+        if((op->type()).code==TypeCode::Float){
+            oss<<"float ";
+        }else{
+            oss<<"int ";
         }
-        oss << ">";
+        oss << "(&"<<op->name<<")";
+    }
+    else{
+        oss << op->name;
+    }
+    if (print_arg) {
+        // oss << "<";
+        for (size_t i = 0; i < op->shape.size(); ++i) {
+            oss << "["<<op->shape[i]<<"]";
+            // if (i < op->shape.size() - 1) {
+            //     oss << ", ";
+            // }
+        }
+        // oss << ">";
     } else {
     oss << "[";
         for (size_t i = 0; i < op->args.size(); ++i) {
             op->args[i].visit_expr(this);
             if (i < op->args.size() - 1) {
-                oss << ", ";
+                oss << "][";
             }
         }
         oss << "]";
@@ -186,33 +201,40 @@ void IRPrinter::visit(Ref<const Var> op) {
 
 
 void IRPrinter::visit(Ref<const Dom> op) {
-    oss << "dom[";
+    oss << "=";
     (op->begin).visit_expr(this);
-    oss << ", ";
-    (op->extent).visit_expr(this);
-    oss << ")";
+    oss << "; ";
+    // (op->extent).visit_expr(this);
+    // oss << ")";
+    extent = op->extent;
 }
 
 
 void IRPrinter::visit(Ref<const Index> op) {
+    if (print_range) {
+        oss<<"int ";
+    }
     oss << op->name;
     if (print_range) {
-        oss << "<";
-        if (op->index_type == IndexType::Spatial) {
-            oss << "spatial";
-        } else if (op->index_type == IndexType::Reduce) {
-            oss << "reduce";
-        } else if (op->index_type == IndexType::Unrolled) {
-            oss << "unrolled";
-        } else if (op->index_type == IndexType::Vectorized) {
-            oss << "vectorized";
-        } else if (op->index_type == IndexType::Block) {
-            oss << "block";
-        } else if (op->index_type == IndexType::Thread) {
-            oss << "thread";
-        }
-        oss << "> in ";
+        // oss << "<";
+        // if (op->index_type == IndexType::Spatial) {
+        //     oss << "spatial";
+        // } else if (op->index_type == IndexType::Reduce) {
+        //     oss << "reduce";
+        // } else if (op->index_type == IndexType::Unrolled) {
+        //     oss << "unrolled";
+        // } else if (op->index_type == IndexType::Vectorized) {
+        //     oss << "vectorized";
+        // } else if (op->index_type == IndexType::Block) {
+        //     oss << "block";
+        // } else if (op->index_type == IndexType::Thread) {
+        //     oss << "thread";
+        // }
+        // oss << "> in ";
         (op->dom).visit_expr(this);
+        oss << op->name<<"<";
+        extent.visit_expr(this);
+        oss << "; ++"<<op->name;
     }
 }
 
@@ -221,9 +243,9 @@ void IRPrinter::visit(Ref<const LoopNest> op) {
     print_range = true;
     for (auto index : op->index_list) {
         print_indent();
-        oss << "for ";
+        oss << "for (";
         index.visit_expr(this);
-        oss << "{\n";
+        oss << ") {\n";
         enter();
     }
     print_range = false;
@@ -263,42 +285,43 @@ void IRPrinter::visit(Ref<const IfThenElse> op) {
 void IRPrinter::visit(Ref<const Move> op) {
     print_indent();
     (op->dst).visit_expr(this);
-    oss << " =<";
-    if (op->move_type == MoveType::HostToDevice) {
-        oss << "host_to_device";
-    } else if (op->move_type == MoveType::MemToShared) {
-        oss << "mem_to_shared";
-    } else if (op->move_type == MoveType::SharedToMem) {
-        oss << "shared_to_mem";
-    } else if (op->move_type == MoveType::MemToLocal) {
-        oss << "mem_to_local";
-    } else if (op->move_type == MoveType::LocalToMem) {
-        oss << "local_to_mem";
-    } else if (op->move_type == MoveType::SharedToLocal) {
-        oss << "shared_to_local";
-    } else if (op->move_type == MoveType::LocalToShared) {
-        oss << "local_to_shared";
-    } else if (op->move_type == MoveType::SharedToShared) {
-        oss << "shared_to_shared";
-    } else if (op->move_type == MoveType::MemToMem) {
-        oss << "mem_to_mem";
-    } else if (op->move_type == MoveType::LocalToLocal) {
-        oss << "local_to_local";
-    }
-    oss << "> ";
+    oss << " =";
+    // if (op->move_type == MoveType::HostToDevice) {
+    //     oss << "host_to_device";
+    // } else if (op->move_type == MoveType::MemToShared) {
+    //     oss << "mem_to_shared";
+    // } else if (op->move_type == MoveType::SharedToMem) {
+    //     oss << "shared_to_mem";
+    // } else if (op->move_type == MoveType::MemToLocal) {
+    //     oss << "mem_to_local";
+    // } else if (op->move_type == MoveType::LocalToMem) {
+    //     oss << "local_to_mem";
+    // } else if (op->move_type == MoveType::SharedToLocal) {
+    //     oss << "shared_to_local";
+    // } else if (op->move_type == MoveType::LocalToShared) {
+    //     oss << "local_to_shared";
+    // } else if (op->move_type == MoveType::SharedToShared) {
+    //     oss << "shared_to_shared";
+    // } else if (op->move_type == MoveType::MemToMem) {
+    //     oss << "mem_to_mem";
+    // } else if (op->move_type == MoveType::LocalToLocal) {
+    //     oss << "local_to_local";
+    // }
+    // oss << "> ";
     (op->src).visit_expr(this);
     oss << "\n";
 }
 
 
 void IRPrinter::visit(Ref<const Kernel> op) {
-    print_indent();
-    if (op->kernel_type == KernelType::CPU) {
-        oss << "<CPU>";
-    } else if (op->kernel_type == KernelType::GPU) {
-        oss << "<GPU>";
-    }
-    oss << " " << op->name << "(";
+    // print_indent();
+    // if (op->kernel_type == KernelType::CPU) {
+    //     oss << "<CPU>";
+    // } else if (op->kernel_type == KernelType::GPU) {
+    //     oss << "<GPU>";
+    // }
+    // oss << " " << op->name << "(";
+    oss << "void "<<op->name << "(";
     print_arg = true;
     for (size_t i = 0; i < op->inputs.size(); ++i) {
         op->inputs[i].visit_expr(this);
