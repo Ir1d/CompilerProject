@@ -704,7 +704,8 @@ void kernel_example(float (&B)[32][16], float (&C)[32][16], float (&A)[32][16]) 
         }\n\
     }\n\
 }";
-  ofile << cheat_src;
+  ofile << "#include \"../run.h\"\n";
+  ofile << src;
   ofile.close();
 }
 
@@ -729,7 +730,9 @@ void solveCase(int idx) {
 #endif LOCAL
   Boost::Internal::IRPrinter printer;
   std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"]));
-  // std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
+  std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
+  ofile << "#include \"../run.h\"\n";
+  ofile << src;
 }
 int main() {
   solveExample();
