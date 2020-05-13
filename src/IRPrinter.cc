@@ -199,7 +199,7 @@ void IRPrinter::visit(Ref<const Var> op) {
     if (print_arg) {
         // oss << "<";
         for (size_t i = 0; i < op->shape.size(); ++i) {
-            oss << "["<<op->shape[i]<<"]";
+            if(op->shape.size()!=1||op->shape[0]!=1) oss << "["<<op->shape[i]<<"]";
             // if (i < op->shape.size() - 1) {
             //     oss << ", ";
             // }
@@ -214,14 +214,20 @@ void IRPrinter::visit(Ref<const Var> op) {
             // }
         }
         if(flag==1) oplist.push_back(li);
-        if(print_all) oss << "[";
+        if(op->shape.size()!=1||op->shape[0]!=1){
+            if(print_all) oss << "[";
+        
         for (size_t i = 0; i < op->args.size(); ++i) {
             op->args[i].visit_expr(this);
             if (i < op->args.size() - 1) {
                 if(print_all) oss << "][";
             }
         }
-        if(print_all) oss << "]";
+        
+        if(op->shape.size()!=1||op->shape[0]!=1){
+            if(print_all) oss << "]";
+        }
+        }
     }
 }
 
