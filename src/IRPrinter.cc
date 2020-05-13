@@ -356,7 +356,7 @@ void IRPrinter::visit(Ref<const Kernel> op) {
         }
     }
     for (size_t i = 0; i < op->outputs.size(); ++i) {
-        oss << ", ";
+        if(i!=0||op->inputs.size()!=0) oss << ",";
         op->outputs[i].visit_expr(this);
     }
     print_arg = false;
