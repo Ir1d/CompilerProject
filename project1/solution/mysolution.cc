@@ -324,8 +324,11 @@ struct indices {
   Expr gen_contract() const {
     Type type = Type::int_scalar(32);
     std::stack<Expr> result;
-    result.emplace(IntImm::make(type, 1));
     auto add_constract = [&](Expr c_) {
+      if (result.empty()) {
+        result.emplace(std::move(c_));
+        return;
+      }
       Expr t = Binary::make(type, BinaryOpType::And, result.top(), c_);
       result.pop();
       result.emplace(std::move(t));
@@ -335,6 +338,7 @@ struct indices {
       add_constract(Compare::make(type, CompareOpType::GE, expr, IntImm::make(type, 0)));
       add_constract(Compare::make(type, CompareOpType::LT, expr, IntImm::make(type, _.second)));
     }
+    if (result.empty()) return IntImm::make(type, 1);
     return result.top();
   }
   std::vector<Expr> gen_indices(const indices &other) const {
@@ -624,13 +628,11 @@ struct statement_parser {
       map_add_2_into_1(global_subscript.matrices, subscript.matrices);
       Stmt ifed = IfThenElse::make(subscript.gen_contract(), std::get<1>(_), Stmt());
       result.emplace_back(LoopNest::make(global_subscript.gen_indices({true}),
-        {IfThenElse::make(global_subscript.gen_contract(), 
-          Move::make(std::get<0>(_), IntImm::make(data_type, 0), MoveType::MemToMem), Stmt())}));
+        {Move::make(std::get<0>(_), IntImm::make(data_type, 0), MoveType::MemToMem)}));
       result.emplace_back(LoopNest::make(subscript.gen_indices(global_subscript), {ifed}));
     }
     map_add_2_into_1(global_subscript.matrices, _subscript.matrices);
-    Stmt ifed = IfThenElse::make(global_subscript.gen_contract(), M, Stmt());
-    result.emplace_back(LoopNest::make(global_subscript.gen_indices({}), {ifed}));
+    result.emplace_back(LoopNest::make(global_subscript.gen_indices({}), {M}));
     return {result, global_subscript.matrices};
   }
 };
