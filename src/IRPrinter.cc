@@ -25,6 +25,7 @@
 #include "IRPrinter.h"
 #include <string.h>
 #include <vector>
+#include <algorithm>
 
 namespace Boost {
 
@@ -299,8 +300,7 @@ void IRPrinter::visit(Ref<const IfThenElse> op) {
     enter();
     (op->false_case).visit_stmt(this);
     exit();
-    } else {
-        if(print_all) oss << "}\n";
+    if(print_all) oss << "}\n";
     }
     if(print_all) print_indent();
     if(print_all) oss << "}\n";
@@ -335,7 +335,7 @@ void IRPrinter::visit(Ref<const Move> op) {
     // }
     // oss << "> ";
     (op->src).visit_expr(this);
-    if(print_all) oss << "\n";
+    if(print_all) oss << ";\n";
 }
 
 
