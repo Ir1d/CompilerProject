@@ -358,21 +358,11 @@ struct indices {
     return indices_replacer{name2index}.mutate(expr);
   }
   size_t range() const {
-    struct pi_numbers: public IRVisitor {
-      size_t result = 1;
-      virtual void visit(Ref<const IntImm> i) {
-        result *= std::abs(i->value());
-      }
-      virtual void visit(Ref<const FloatImm> f) {
-        result *= std::abs(std::ceil(f->value()));
-      }
-    } pi;
     size_t max = 1;
     for (auto p : contract) {
-      p.first.visit_expr(&pi);
       max = std::max(max, p.second);
     }
-    return (pi.result + 1) * max + 10;
+    return max;
   }
   Expr find_index(const std::string &name, const indices &global_subscript) {
     auto itr = global_subscript.name2index.find(name);
@@ -619,7 +609,7 @@ struct statement_parser {
             Index::make(
               index_type,
               p,
-              Dom::make(index_type, IntImm::make(index_type, -range), IntImm::make(index_type, range)),
+              Dom::make(index_type, IntImm::make(index_type, 0), IntImm::make(index_type, range)),
               IndexType::Reduce));
         Stmt stmt = Move::make(lhs, Binary::make(data_type, BinaryOpType::Add, lhs, my_subscript.replace_indices(rhs)), MoveType::MemToMem);
         stmts.emplace_back(lhs, stmt, my_subscript);
