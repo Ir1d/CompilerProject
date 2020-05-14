@@ -335,10 +335,9 @@ struct indices {
     };
     for (auto _: contract) {
       Expr expr = _.first;
-      add_constract(Compare::make(type, CompareOpType::GE, expr, IntImm::make(type, 0)));
       add_constract(Compare::make(type, CompareOpType::LT, expr, IntImm::make(type, _.second)));
     }
-    if (result.empty()) return IntImm::make(type, 1);
+    if (result.empty()) return {};
     return result.top();
   }
   std::vector<Expr> gen_indices(const indices &other) const {
@@ -626,7 +625,8 @@ struct statement_parser {
     for (const auto &_ : stmts) {
       const indices &subscript = std::get<2>(_);
       map_add_2_into_1(global_subscript.matrices, subscript.matrices);
-      Stmt ifed = IfThenElse::make(subscript.gen_contract(), std::get<1>(_), Stmt());
+      auto contracts = subscript.gen_contract();
+      Stmt ifed = contracts.defined() ? IfThenElse::make(contracts, std::get<1>(_), Stmt()) : std::get<1>(_);
       result.emplace_back(LoopNest::make(global_subscript.gen_indices({true}),
         {Move::make(std::get<0>(_), IntImm::make(data_type, 0), MoveType::MemToMem)}));
       result.emplace_back(LoopNest::make(subscript.gen_indices(global_subscript), {ifed}));
