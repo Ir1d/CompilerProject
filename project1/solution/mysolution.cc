@@ -219,7 +219,10 @@ std::vector<std::vector<node> > splitGroup(std::vector<node> li) {
     if (depth == 0) {
       if (li[i].type == 0 && (li[i].s[0] == '+' || li[i].s[0] == '-')) {
         // group 1
-        res.push_back(std::vector<node>(li.begin() + prev, li.begin() + i));
+        if (i != prev) {
+          // for + -3 case, i == prev
+          res.push_back(std::vector<node>(li.begin() + prev, li.begin() + i));
+        }
         // delimeter
         res.push_back(std::vector<node>(li.begin() + i, li.begin() + i + 1));
         // next group
