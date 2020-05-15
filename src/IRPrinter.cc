@@ -178,7 +178,15 @@ void IRPrinter::visit(Ref<const Var> op) {
             oss<<"int ";
         }
         oss << "(&"<<op->name<<")";
-        inname.push_back(op->name);
+        std::vector<std::string>::iterator iter2;
+        iter2 = find(inname.begin(), inname.end(), op->name);
+        if(iter2==inname.end()){
+            inname.push_back(op->name);
+        }
+        else{
+            flag1=false;
+        }
+        
     }
     else{
         if(print_all) oss << op->name;
@@ -199,7 +207,7 @@ void IRPrinter::visit(Ref<const Var> op) {
     if (print_arg) {
         // oss << "<";
         for (size_t i = 0; i < op->shape.size(); ++i) {
-            if(op->shape.size()!=1||op->shape[0]!=1) oss << "["<<op->shape[i]<<"]";
+            if((op->shape.size()!=1||op->shape[0]!=1)&&flag1) oss << "["<<op->shape[i]<<"]";
             // if (i < op->shape.size() - 1) {
             //     oss << ", ";
             // }
@@ -308,7 +316,7 @@ void IRPrinter::visit(Ref<const IfThenElse> op) {
     exit();
     if(print_all) oss << "}\n";
     }
-    if(print_all) print_indent();
+    // if(print_all) print_indent();
     if(print_all) oss << "}\n";
 }
 
@@ -355,17 +363,21 @@ void IRPrinter::visit(Ref<const Kernel> op) {
     // oss << " " << op->name << "(";
     oss << "void "<<op->name << "(";
     print_arg = true;
+    
     for (size_t i = 0; i < op->inputs.size(); ++i) {
         op->inputs[i].visit_expr(this);
         if (i < op->inputs.size() - 1) {
             oss << ", ";
         }
     }
+    flag1=true;
     for (size_t i = 0; i < op->outputs.size(); ++i) {
-        if(i!=0||op->inputs.size()!=0) oss << ",";
+        if((i!=0||op->inputs.size()!=0)&& flag1) oss << ",";
+        flag1=true;
         op->outputs[i].visit_expr(this);
     }
     print_arg = false;
+    
     oss << ") {\n";
     enter();
     for (auto stmt : op->stmt_list) {
