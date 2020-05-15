@@ -85,7 +85,9 @@ class IRPrinter : public IRVisitor {
     bool print_range;
     bool print_arg;
     bool print_all;
+    bool flag1;
     Expr extent;
+    std::vector<std::string> sig;
     std::vector<std::string> inname;
     std::vector<std::string> opname;
     std::vector<std::vector<int>> oplist;
