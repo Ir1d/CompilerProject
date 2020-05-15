@@ -171,16 +171,17 @@ void IRPrinter::visit(Ref<const Ramp> op) {
 
 void IRPrinter::visit(Ref<const Var> op) {
     int flag=0;
-    if(print_arg){
-        if((op->type()).code==TypeCode::Float){
-            oss<<"float ";
-        }else{
-            oss<<"int ";
-        }
-        oss << "(&"<<op->name<<")";
+    if(print_arg){        
         std::vector<std::string>::iterator iter2;
         iter2 = find(inname.begin(), inname.end(), op->name);
         if(iter2==inname.end()){
+            if(flag2) oss << ",";
+            if((op->type()).code==TypeCode::Float){
+                oss<<"float ";
+            }else{
+                oss<<"int ";
+            }
+            oss << "(&"<<op->name<<")";
             inname.push_back(op->name);
         }
         else{
@@ -363,7 +364,8 @@ void IRPrinter::visit(Ref<const Kernel> op) {
     // oss << " " << op->name << "(";
     oss << "void "<<op->name << "(";
     print_arg = true;
-    
+    flag1=true;
+    flag2=false;
     for (size_t i = 0; i < op->inputs.size(); ++i) {
         op->inputs[i].visit_expr(this);
         if (i < op->inputs.size() - 1) {
@@ -371,10 +373,11 @@ void IRPrinter::visit(Ref<const Kernel> op) {
         }
     }
     flag1=true;
+    flag2=false;
     for (size_t i = 0; i < op->outputs.size(); ++i) {
-        if((i!=0||op->inputs.size()!=0)&& flag1) oss << ",";
-        flag1=true;
+        if(i!=0||op->inputs.size()!=0) flag2=true;
         op->outputs[i].visit_expr(this);
+        flag1=true;
     }
     print_arg = false;
     
