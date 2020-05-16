@@ -317,28 +317,39 @@ ASSOC get_assoc(OP o) {
   return get_assoc(get_precedence(o));
 }
 }
-static Type index_type = Type::int_scalar(32), data_type = Type::float_scalar(32);
+Type int_type = Type::int_scalar(32), float_type = Type::float_scalar(32);
+Expr build_number(const node &n, bool gen_float = true) {
+  assert(n.type == 1);
+  if (gen_float) return FloatImm::make(float_type, std::stod(n.s));
+  else return IntImm::make(int_type, std::stoll(n.s));
+}
+struct types {
+  Type index_type, data_type;
+  types(Type data_type_ = float_type, Type index_type_ = int_type):
+      index_type(index_type_), data_type(data_type_) { }
+  types(const std::string &s): types(s == "float" ? float_type : s == "int" ? int_type : Type()) { }
+};
 struct indices {
   std::map<std::string, Expr> name2index;
   std::vector<std::pair<Expr, size_t>> contract;
   std::map<std::string, Expr> matrices;
+  const types &data_types;
   bool global;
-  indices(bool global_ = false): global(global_) { }
+  indices(const types &types_, bool global_ = false): data_types(types_), global(global_) { }
   Expr gen_contract() const {
-    Type type = Type::int_scalar(32);
     std::stack<Expr> result;
     auto add_constract = [&](Expr c_) {
       if (result.empty()) {
         result.emplace(std::move(c_));
         return;
       }
-      Expr t = Binary::make(type, BinaryOpType::And, result.top(), c_);
+      Expr t = Binary::make(data_types.index_type, BinaryOpType::And, result.top(), c_);
       result.pop();
       result.emplace(std::move(t));
     };
     for (auto _: contract) {
       Expr expr = _.first;
-      add_constract(Compare::make(type, CompareOpType::LT, expr, IntImm::make(type, _.second)));
+      add_constract(Compare::make(data_types.index_type, CompareOpType::LT, expr, IntImm::make(data_types.index_type, _.second)));
     }
     if (result.empty()) return {};
     return result.top();
@@ -375,13 +386,15 @@ struct indices {
     if (itr != global_subscript.name2index.end()) return itr->second;
     itr = name2index.find(name);
     if (itr != name2index.end()) return itr->second;
-    Expr dom = Dom::make(index_type, 0, 0);
-    Expr index = Index::make(index_type, name, dom, global ? IndexType::Spatial : IndexType::Reduce);
+    Expr dom = Dom::make(data_types.index_type, 0, 0);
+    Expr index = Index::make(data_types.index_type, name, dom, global ? IndexType::Spatial : IndexType::Reduce);
     name2index.emplace(name, index);
     return index;
   }
   bool add_matrix(const std::string &name, Expr e) {
     struct args_replacer: public IRMutator {
+      const Type &index_type;
+      args_replacer(const Type &index_type_): index_type(index_type_) { }
       virtual Expr visit(Ref<const Var> v) {
         std::vector<Expr> Is;
         for (size_t shape: v->shape)
@@ -395,7 +408,7 @@ struct indices {
     };
     auto itr = matrices.find(name);
     if (itr != matrices.end()) return false;
-    matrices.emplace(name, args_replacer{}.mutate(e));
+    matrices.emplace(name, args_replacer{data_types.index_type}.mutate(e));
     return true;
   }
 };
@@ -404,10 +417,23 @@ struct stacks {
   std::stack<operators::OP> ops;
   std::stack<bool> need_op;
   const indices &global_subscript;
+  indices &my_subscript;
+  const types &data_types;
   bool parsing_index;
-  stacks(const indices &global_, bool parsing_index_ = false):
-      global_subscript(global_), parsing_index(parsing_index_) {
-    need_op.push(false);
+  struct initializer {
+    stacks &self;
+    bool parsing_index;
+    initializer(stacks &self_, bool parsing_index_): self(self_), parsing_index(self.parsing_index) {
+      self.need_op.push(false);
+      self.parsing_index = parsing_index_;
+    }
+    ~initializer() {
+      self.need_op.pop();
+      self.parsing_index = parsing_index;
+    }
+  } _;
+  stacks(const indices &global_, indices &mine_, bool parsing_index_ = false):
+      global_subscript(global_), my_subscript(mine_), data_types(mine_.data_types), _(*this, parsing_index_) {
   }
   std::deque<Expr> get_args(size_t count = 2) {
     std::deque<Expr> result;
@@ -418,7 +444,7 @@ struct stacks {
     return result;
   }
   Type result_type() const {
-    return parsing_index? index_type : data_type;
+    return parsing_index? data_types.index_type : data_types.data_type;
   }
   void build_node(operators::OP o) {
     using namespace operators;
@@ -485,18 +511,17 @@ struct stacks {
     need_op.top() = true;
     return;
   }
-  void read_token(const node &n, indices &my_subscript) {
+  void read_token(const node &n) {
     using namespace operators;
     switch (n.type) {
-      case 0: { // op
+      case 0:  // op
         add_new_op(get_op(n.s, !need_op.top()));
-        break;
-      }
+        return;
       case 1: // number
-        read_expr(build_number(n, !parsing_index));
+        read_expr(build_number(n, !parsing_index && data_types.data_type == float_type));
         return;
       case 2: // matrix
-        read_expr(build_matrix(n, my_subscript, global_subscript));
+        read_expr(build_matrix(n));
         return;
       case 3: // index
         read_expr(my_subscript.find_index(n.s, global_subscript));
@@ -504,35 +529,31 @@ struct stacks {
       default: assert(false);
     }
   }
-  static Expr build_number(const node &n, bool gen_float = true) {
-    assert(n.type == 1);
-    if (gen_float) return FloatImm::make(data_type, std::stod(n.s));
-    else return IntImm::make(index_type, std::stoll(n.s));
-  }
-  static Expr build_matrix(const node &n, indices &my_subscript, const indices &global_subscript) {
+  Expr build_matrix(const node &n) {
     assert(n.type == 2);
     std::vector<Expr> args;
     auto itr1 = n.param.begin();
     auto itr2 = n.range.begin();
     while (itr1 != n.param.end() && itr2 != n.range.end()) {
-      auto expr = parse_group(*itr1, my_subscript, global_subscript, true);
+      auto expr = parse_group(*itr1, true);
       args.emplace_back(expr);
       my_subscript.contract.emplace_back(expr, *itr2);
       itr1++;
       itr2++;
     }
-    Expr matrix = Var::make(data_type, n.name, args, n.range);
+    Expr matrix = Var::make(data_types.data_type, n.name, args, n.range);
     my_subscript.add_matrix(n.name, matrix);
     return matrix;
   }
-  static Expr parse_group(const std::vector<node> &nodes, indices &my_subscript, const indices &global_subscript, bool parsing_index = false) {
-    stacks s{global_subscript, parsing_index};
-    s.read_token(node("(", 0), my_subscript);
+  Expr parse_group(const std::vector<node> &nodes, bool parsing_index) {
+    initializer _(*this, parsing_index);
+    read_token(node("(", 0));
     for (const node &n : nodes)
-      s.read_token(n, my_subscript);
-    s.read_token(node(")", 0), my_subscript);
-    assert(s.exprs.size() == 1);
-    return s.exprs.top();
+      read_token(n);
+    read_token(node(")", 0));
+    Expr t = exprs.top();
+    exprs.pop();
+    return t;
   }
 };
 struct statement_parser {
@@ -540,13 +561,15 @@ struct statement_parser {
   Expr lhs;
   size_t tempvar_upper_bound = 0;
   std::vector<std::vector<node>> rhs;
-  statement_parser(const std::vector<std::vector<node>> &lhs_, const std::vector<std::vector<node>> &rhs_):
-      global_subscript(true), lhs(get_lhs(lhs_[0][0], global_subscript)), rhs(rhs_) {
+  const types &data_types;
+  statement_parser(const std::vector<std::vector<node>> &lhs_, const std::vector<std::vector<node>> &rhs_, const types &data_types_):
+      global_subscript(data_types_, true), lhs(get_lhs(lhs_[0][0], global_subscript)), rhs(rhs_), data_types(global_subscript.data_types) {
     assert(lhs_.size() == 1);
     assert(lhs_[0].size() == 1);
   }
   static Expr get_lhs(const node &n, indices &global_subscript) {
-    Expr e = stacks::build_matrix(n, global_subscript, global_subscript);
+    Expr e = stacks{global_subscript, global_subscript}.build_matrix(n);
+    const types &data_types = global_subscript.data_types;
     struct subscript_fix: public IRVisitor {
       std::map<std::string, size_t> name2size;
       size_t t = 0;
@@ -572,9 +595,9 @@ struct statement_parser {
       global_subscript.name2index.emplace(
         p.first,
         Index::make(
-          index_type,
+          data_types.index_type,
           p.first,
-          Dom::make(index_type, IntImm::make(index_type, 0), IntImm::make(index_type, p.second)),
+          Dom::make(data_types.index_type, IntImm::make(data_types.index_type, 0), IntImm::make(data_types.index_type, p.second)),
           IndexType::Spatial));
     return global_subscript.replace_indices(e);
   }
@@ -592,18 +615,17 @@ struct statement_parser {
     return IR_Var_name_changer{s}.mutate(lhs);
   }
   std::pair<std::vector<Stmt>, std::map<std::string, Expr>> parse() {
-    stacks s{global_subscript};
-    indices _subscript;
+    indices _subscript{data_types};
+    stacks s{global_subscript, _subscript};
     std::vector<std::tuple<Expr, Stmt, indices>> stmts;
     std::vector<Stmt> result;
-    s.read_token(node("(", 0), _subscript);
+    s.read_token(node("(", 0));
     for (const std::vector<node> &group : rhs) {
       if (group.size() == 1 && (group[0].s == "+" || group[0].s == "-"))
-        s.read_token(node(group[0].s, 0), _subscript);
+        s.read_token(node(group[0].s, 0));
       else {
-        stacks s_{global_subscript};
-        indices my_subscript;
-        Expr rhs = stacks::parse_group(group, my_subscript, global_subscript), lhs = new_tempvar();
+        indices my_subscript{data_types};
+        Expr lhs = new_tempvar(), rhs = stacks{global_subscript, my_subscript}.parse_group(group, false);
         size_t range = my_subscript.range();
         std::vector<std::string> names;
         for (const auto &p : my_subscript.name2index)
@@ -613,16 +635,16 @@ struct statement_parser {
           my_subscript.name2index.emplace(
             p,
             Index::make(
-              index_type,
+              data_types.index_type,
               p,
-              Dom::make(index_type, IntImm::make(index_type, 0), IntImm::make(index_type, range)),
+              Dom::make(data_types.index_type, IntImm::make(data_types.index_type, 0), IntImm::make(data_types.index_type, range)),
               IndexType::Reduce));
-        Stmt stmt = Move::make(lhs, Binary::make(data_type, BinaryOpType::Add, lhs, my_subscript.replace_indices(rhs)), MoveType::MemToMem);
+        Stmt stmt = Move::make(lhs, Binary::make(data_types.data_type, BinaryOpType::Add, lhs, my_subscript.replace_indices(rhs)), MoveType::MemToMem);
         stmts.emplace_back(lhs, stmt, my_subscript);
         s.read_expr(lhs);
       }
     }
-    s.read_token(node(")", 0), _subscript);
+    s.read_token(node(")", 0));
     assert(s.exprs.size() == 1);
     Stmt M = Move::make(lhs, s.exprs.top(), MoveType::MemToMem);
     for (const auto &_ : stmts) {
@@ -630,12 +652,12 @@ struct statement_parser {
       map_add_2_into_1(global_subscript.matrices, subscript.matrices);
       auto contracts = subscript.gen_contract();
       Stmt ifed = contracts.defined() ? IfThenElse::make(contracts, std::get<1>(_), Stmt()) : std::get<1>(_);
-      result.emplace_back(LoopNest::make(global_subscript.gen_indices({true}),
-        {Move::make(std::get<0>(_), IntImm::make(data_type, 0), MoveType::MemToMem)}));
+      result.emplace_back(LoopNest::make(global_subscript.gen_indices({data_types, true}),
+        {Move::make(std::get<0>(_), IntImm::make(data_types.data_type, 0), MoveType::MemToMem)}));
       result.emplace_back(LoopNest::make(subscript.gen_indices(global_subscript), {ifed}));
     }
     map_add_2_into_1(global_subscript.matrices, _subscript.matrices);
-    result.emplace_back(LoopNest::make(global_subscript.gen_indices({}), {M}));
+    result.emplace_back(LoopNest::make(global_subscript.gen_indices({data_types}), {M}));
     return {result, global_subscript.matrices};
   }
 };
@@ -645,14 +667,16 @@ Boost::Internal::Group kernel2IR(
     const std::vector<std::vector<std::vector<node>>> &tokenList,
     const std::string &function_name,
     const std::vector<std::string> &inputs,
-    const std::vector<std::string> &outputs) {
+    const std::vector<std::string> &outputs,
+    const std::string &data_type) {
   using namespace Boost::Internal;
   std::vector<Stmt> stmts;
   std::map<std::string, Expr> matrices;
+  lym_helpers::types types{data_type};
   auto itr = tokenList.begin();
   while (itr != tokenList.end()) {
     auto itr2 = std::next(itr);
-    lym_helpers::statement_parser parser{*itr, *itr2};
+    lym_helpers::statement_parser parser{*itr, *itr2, types};
     auto t = parser.parse();
     for (auto stmt: t.first)
       stmts.emplace_back(stmt);
@@ -694,7 +718,7 @@ void solveExample() {
 #endif LOCAL
 
   Boost::Internal::IRPrinter printer;
-  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"]));
+  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"]));
   
   std::string cheat_src =
       "// this is supposed to be generated by codegen tool\n\
@@ -732,7 +756,7 @@ void solveCase(int idx) {
   printList(tokenList);
 #endif LOCAL
   Boost::Internal::IRPrinter printer;
-  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"]));
+  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"]));
   std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
   ofile << "#include \"../run.h\"\n";
   ofile << src;
