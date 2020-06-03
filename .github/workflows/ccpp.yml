@@ -21,6 +21,7 @@ jobs:
       run: cd build && make -j 4
     - name: test
       run: cd build/test && ./gemm && ./conv2d
-    - name: test testcases
+    - name: test testcases from proj1
       run: cd build/project1/ && ./test1
-
+    # - name: test testcases from proj2
+    #   run: cd build/project2/ && ./test2
