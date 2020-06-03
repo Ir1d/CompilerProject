@@ -331,7 +331,7 @@ struct types {
 };
 struct indices {
   std::map<std::string, Expr> name2index;
-  std::vector<std::pair<Expr, size_t>> contract;
+  std::vector<std::pair<Expr, size_t> > contract;
   std::map<std::string, Expr> matrices;
   const types &data_types;
   bool global;
@@ -560,9 +560,9 @@ struct statement_parser {
   indices global_subscript;
   Expr lhs;
   size_t tempvar_upper_bound = 0;
-  std::vector<std::vector<node>> rhs;
+  std::vector<std::vector<node> > rhs;
   const types &data_types;
-  statement_parser(const std::vector<std::vector<node>> &lhs_, const std::vector<std::vector<node>> &rhs_, const types &data_types_):
+  statement_parser(const std::vector<std::vector<node> > &lhs_, const std::vector<std::vector<node> > &rhs_, const types &data_types_):
       global_subscript(data_types_, true), lhs(get_lhs(lhs_[0][0], global_subscript)), rhs(rhs_), data_types(global_subscript.data_types) {
     assert(lhs_.size() == 1);
     assert(lhs_[0].size() == 1);
@@ -614,10 +614,10 @@ struct statement_parser {
     tempvar_upper_bound++;
     return IR_Var_name_changer{s}.mutate(lhs);
   }
-  std::pair<std::vector<Stmt>, std::map<std::string, Expr>> parse() {
+  std::pair<std::vector<Stmt>, std::map<std::string, Expr> > parse() {
     indices _subscript{data_types};
     stacks s{global_subscript, _subscript};
-    std::vector<std::tuple<Expr, Stmt, indices>> stmts;
+    std::vector<std::tuple<Expr, Stmt, indices> > stmts;
     std::vector<Stmt> result;
     s.read_token(node("(", 0));
     for (const std::vector<node> &group : rhs) {
@@ -664,7 +664,7 @@ struct statement_parser {
 } // namespace lym_helpers
 
 Boost::Internal::Group kernel2IR(
-    const std::vector<std::vector<std::vector<node>>> &tokenList,
+    const std::vector<std::vector<std::vector<node> > > &tokenList,
     const std::string &function_name,
     const std::vector<std::string> &inputs,
     const std::vector<std::string> &outputs,
