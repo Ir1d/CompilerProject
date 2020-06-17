@@ -758,11 +758,11 @@ void solveCase(int idx) {
   Boost::Internal::IRPrinter printer;
   std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"]));
   std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
-  ofile << "#include \"../run.h\"\n";
+  ofile << "#include \"../run2.h\"\n";
   ofile << src;
 }
 int main() {
-  solveExample();
+  // solveExample();
   for (int idx = 1; idx <= 10; ++idx) {
     solveCase(idx);
   }
