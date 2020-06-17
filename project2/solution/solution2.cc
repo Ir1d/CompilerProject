@@ -16,6 +16,7 @@
 #include <stack>
 #include <deque>
 #include <map>
+#include <set>
 #include <utility>
 using json = nlohmann::json;
 namespace xdj_helper_function {
@@ -318,6 +319,11 @@ ASSOC get_assoc(OP o) {
 }
 }
 Type int_type = Type::int_scalar(32), float_type = Type::float_scalar(32);
+Expr zero_of(Type t) {
+  if (t == int_type) return IntImm::make(int_type, 0);
+  if (t == float_type) return FloatImm::make(float_type, 0);
+  return Expr(); 
+}
 Expr build_number(const node &n, bool gen_float = true) {
   assert(n.type == 1);
   if (gen_float) return FloatImm::make(float_type, std::stod(n.s));
@@ -410,6 +416,12 @@ struct indices {
     if (itr != matrices.end()) return false;
     matrices.emplace(name, args_replacer{data_types.index_type}.mutate(e));
     return true;
+  }
+  Expr find_or_construct(const std::string &name, Expr e) {
+    auto itr = name2index.find(name);
+    if (itr != name2index.end()) return itr->second;
+    name2index.emplace(name, e);
+    return e;
   }
 };
 struct stacks {
@@ -556,13 +568,13 @@ struct stacks {
     return t;
   }
 };
-struct statement_parser {
+struct statement_gradients {
   indices global_subscript;
   Expr lhs;
   size_t tempvar_upper_bound = 0;
   std::vector<std::vector<node> > rhs;
   const types &data_types;
-  statement_parser(const std::vector<std::vector<node> > &lhs_, const std::vector<std::vector<node> > &rhs_, const types &data_types_):
+  statement_gradients(const std::vector<std::vector<node> > &lhs_, const std::vector<std::vector<node> > &rhs_, const types &data_types_):
       global_subscript(data_types_, true), lhs(get_lhs(lhs_[0][0], global_subscript)), rhs(rhs_), data_types(global_subscript.data_types) {
     assert(lhs_.size() == 1);
     assert(lhs_[0].size() == 1);
@@ -601,7 +613,7 @@ struct statement_parser {
           IndexType::Spatial));
     return global_subscript.replace_indices(e);
   }
-  Expr new_tempvar() {
+  Expr new_tempvar(Expr original) {
     struct IR_Var_name_changer: public IRMutator {
       std::string new_name;
       IR_Var_name_changer(const std::string &new_name_): new_name(new_name_) { }
@@ -612,9 +624,106 @@ struct statement_parser {
     std::string s = "tmp";
     s += std::to_string(tempvar_upper_bound);
     tempvar_upper_bound++;
-    return IR_Var_name_changer{s}.mutate(lhs);
+    return IR_Var_name_changer{s}.mutate(original);
   }
-  std::pair<std::vector<Stmt>, std::map<std::string, Expr> > parse() {
+  std::vector<Stmt> parse(const std::string &grad_to) {
+    struct add_name: IRMutator {
+      std::string new_name;
+      add_name(const std::string &new_name_): new_name(new_name_) { }
+      virtual Expr visit(Ref<const Var> v) {
+        return Var::make(v->type(), new_name + v->name, v->args, v->shape);
+      }
+    };
+    struct arg_replacer: IRMutator {
+      indices &temp_indices;
+      arg_replacer(indices &indices_): temp_indices(indices_) { }
+      virtual Expr visit(Ref<const Var> v) {
+        std::vector<Expr> args;
+        for (auto i = size_t(0); i < v->args.size(); ++i) {
+          std::string new_name = "_i" + std::to_string(i);
+          Type t = v->args[i]->type();
+          args.emplace_back(temp_indices.find_or_construct(new_name,
+            Index::make(t, new_name,
+              Dom::make(t, IntImm::make(t, 0), IntImm::make(t, v->shape[i])),
+              IndexType::Spatial)));
+        }
+        return Var::make(v->type(), v->name, args, v->shape);
+      }
+    };
+    auto gen_empty_loop = [&](Stmt s) -> Stmt {
+      indices temp_indices{data_types, true};
+      arg_replacer replacer{temp_indices};
+      Stmt looped = s->mutate_stmt(&replacer);
+      return LoopNest::make(temp_indices.gen_indices({data_types}), {looped});
+    };
+    struct backward: IRVisitor {
+      std::vector<std::pair<Expr, Expr>> known_results;
+      std::stack<Expr> gradients;
+      std::string grad_to;
+      backward(const std::string &grad_to_, Expr initial_grad): grad_to(grad_to_) {
+        gradients.push(initial_grad);
+      }
+      virtual void visit(Ref<const Unary> op) {
+        switch (op->op_type) {
+          case UnaryOpType::Neg: {
+            gradients.push(Unary::make(gradients.top()->type(), UnaryOpType::Neg, gradients.top()));
+            op->a.visit_expr(this);
+            gradients.pop();
+          }
+          default: assert(false);
+        }
+      }
+      virtual void visit(Ref<const Binary> op) {
+        switch (op->op_type) {
+          case BinaryOpType::Add: {
+            op->a.visit_expr(this);
+            op->b.visit_expr(this);
+            break;
+          }
+          case BinaryOpType::Sub: {
+            op->a.visit_expr(this);
+            gradients.push(Unary::make(gradients.top()->type(), UnaryOpType::Neg, gradients.top()));
+            op->b.visit_expr(this);
+            gradients.pop();
+            break;
+          }
+          case BinaryOpType::Mul: {
+            Type type = gradients.top()->type();
+            gradients.push(Binary::make(type, BinaryOpType::Mul, gradients.top(), op->b));
+            op->a.visit_expr(this);
+            gradients.pop();
+            gradients.push(Binary::make(type, BinaryOpType::Mul, gradients.top(), op->a));
+            op->b.visit_expr(this);
+            gradients.pop();
+            break;
+          }
+          case BinaryOpType::Div: {
+            Type type = gradients.top()->type();
+            gradients.push(Binary::make(type, BinaryOpType::Div, gradients.top(), op->b));
+            op->a.visit_expr(this);
+            gradients.pop();
+            gradients.push(Unary::make(type, UnaryOpType::Neg,
+              Binary::make(type, BinaryOpType::Div,
+                Binary::make(type, BinaryOpType::Mul,
+                  gradients.top(),
+                  op->a),
+                Binary::make(type, BinaryOpType::Mul,
+                  op->b,
+                  op->b))));
+            op->b.visit_expr(this);
+            gradients.pop();
+            break;
+          }
+          default: assert(false);
+        }
+      }
+      virtual void visit(Ref<const Var> v) {
+        if (v->name != grad_to) return;
+        known_results.emplace_back(v, gradients.top());
+      }
+    };
+    add_name add_d{"d"};
+    Expr dlhs = lhs.mutate_expr(&add_d);
     indices _subscript{data_types};
     stacks s{global_subscript, _subscript};
     std::vector<std::tuple<Expr, Stmt, indices> > stmts;
@@ -625,7 +734,7 @@ struct statement_parser {
         s.read_token(node(group[0].s, 0));
       else {
         indices my_subscript{data_types};
-        Expr lhs = new_tempvar(), rhs = stacks{global_subscript, my_subscript}.parse_group(group, false);
+        Expr rhs = stacks{global_subscript, my_subscript}.parse_group(group, false);
         size_t range = my_subscript.range();
         std::vector<std::string> names;
         for (const auto &p : my_subscript.name2index)
@@ -639,26 +748,40 @@ struct statement_parser {
               p,
               Dom::make(data_types.index_type, IntImm::make(data_types.index_type, 0), IntImm::make(data_types.index_type, range)),
               IndexType::Reduce));
-        Stmt stmt = Move::make(lhs, Binary::make(data_types.data_type, BinaryOpType::Add, lhs, my_subscript.replace_indices(rhs)), MoveType::MemToMem);
-        stmts.emplace_back(lhs, stmt, my_subscript);
-        s.read_expr(lhs);
+        backward gradder{grad_to, dlhs};
+        rhs.visit_expr(&gradder);
+        s.read_token(node("(", 0));
+        bool put_add = false;
+        for (auto grads: gradder.known_results) {
+          if (put_add) s.read_token(node("+", 0));
+          else put_add = true;
+          Expr gradded = grads.first, rhs = grads.second;
+          Expr lhs = new_tempvar(gradded);
+          Stmt stmt = Move::make(lhs, Binary::make(data_types.data_type, BinaryOpType::Add, lhs, my_subscript.replace_indices(rhs)), MoveType::MemToMem);
+          stmts.emplace_back(lhs, stmt, my_subscript);
+          s.read_expr(lhs);
+        }
+        if (!put_add) s.read_expr(zero_of(data_types.data_type));
+        s.read_token(node(")", 0));
       }
     }
     s.read_token(node(")", 0));
     assert(s.exprs.size() == 1);
-    Stmt M = Move::make(lhs, s.exprs.top(), MoveType::MemToMem);
     for (const auto &_ : stmts) {
+      result.emplace_back(gen_empty_loop(
+        Move::make(std::get<0>(_), IntImm::make(data_types.data_type, 0), MoveType::MemToMem)));
       const indices &subscript = std::get<2>(_);
       map_add_2_into_1(global_subscript.matrices, subscript.matrices);
       auto contracts = subscript.gen_contract();
       Stmt ifed = contracts.defined() ? IfThenElse::make(contracts, std::get<1>(_), Stmt()) : std::get<1>(_);
-      result.emplace_back(LoopNest::make(global_subscript.gen_indices({data_types, true}),
-        {Move::make(std::get<0>(_), IntImm::make(data_types.data_type, 0), MoveType::MemToMem)}));
       result.emplace_back(LoopNest::make(subscript.gen_indices(global_subscript), {ifed}));
     }
     map_add_2_into_1(global_subscript.matrices, _subscript.matrices);
-    result.emplace_back(LoopNest::make(global_subscript.gen_indices({data_types}), {M}));
-    return {result, global_subscript.matrices};
+    assert(global_subscript.matrices.find(grad_to) != global_subscript.matrices.end());
+    Expr lhs = global_subscript.matrices[grad_to]->mutate_expr(&add_d);
+    Stmt M = Move::make(lhs, s.exprs.top(), MoveType::MemToMem);
+    result.emplace_back(gen_empty_loop(M));
+    return result;
   }
 };
 } // namespace lym_helpers
@@ -668,28 +791,58 @@ Boost::Internal::Group kernel2IR(
     const std::string &function_name,
     const std::vector<std::string> &inputs,
     const std::vector<std::string> &outputs,
-    const std::string &data_type) {
+    const std::string &data_type,
+    const std::vector<std::string> &grad_tos) {
   using namespace Boost::Internal;
   std::vector<Stmt> stmts;
-  std::map<std::string, Expr> matrices;
+  struct matrix_collector: IRVisitor {
+    std::map<std::string, Expr> matrices;
+    virtual void visit(Ref<const Var> v) {
+      if (matrices.find(v->name) != matrices.end()) return;
+      std::vector<Expr> args;
+      for (Expr e : v->args)
+        args.emplace_back(Index::make(e->type(), "I", Dom::make(e->type(), IntImm::make(e->type(), 0), IntImm::make(e->type(), 0)), IndexType::Spatial));
+      matrices.emplace(v->name, Var::make(v->type(), v->name, args, v->shape));
+    }
+    virtual void visit(Ref<const IfThenElse> op) {
+      op->cond.visit_expr(this);
+      op->true_case.visit_stmt(this);
+      if (op->false_case.defined())
+        op->false_case.visit_stmt(this);
+    }
+  } matrices;
   lym_helpers::types types{data_type};
   auto itr = tokenList.begin();
   while (itr != tokenList.end()) {
     auto itr2 = std::next(itr);
-    lym_helpers::statement_parser parser{*itr, *itr2, types};
-    auto t = parser.parse();
-    for (auto stmt: t.first)
-      stmts.emplace_back(stmt);
-    lym_helpers::map_add_2_into_1(matrices, t.second);
+    lym_helpers::statement_gradients parser{*itr, *itr2, types};
+    for (const auto &grad_to: grad_tos) {
+      auto t = parser.parse(grad_to);
+      for (auto stmt: t) {
+        stmts.emplace_back(stmt);
+        stmt->visit_node(&matrices);
+      }
+    }
     itr = std::next(itr2);
   }
-  auto string2exprs = [&](const std::vector<std::string> &strs) {
-    std::vector<Expr> result;
-    for (const auto &s : strs)
-      result.emplace_back(matrices[s]);
-    return result;
-  };
-  auto kernel = Kernel::make(function_name, string2exprs(inputs), string2exprs(outputs), stmts, KernelType::CPU);
+  #ifdef LOCAL
+    logInfo("Parsing ended OK!");
+  #endif
+  std::vector<Expr> input_exprs;
+  std::vector<Expr> output_exprs;
+  for (const auto &s : inputs) {
+    auto itr = matrices.matrices.find(s);
+    if (itr != matrices.matrices.end())
+      input_exprs.emplace_back(itr->second);
+  }
+  for (const auto &s : outputs) {
+    auto itr = matrices.matrices.find("d" + s);
+    if (itr != matrices.matrices.end())
+      input_exprs.emplace_back(itr->second);
+  }
+  for (const auto &s : grad_tos)
+    output_exprs.emplace_back(matrices.matrices["d" + s]);
+  auto kernel = Kernel::make(function_name, input_exprs, output_exprs, stmts, KernelType::CPU);
 #ifdef LOCAL
   IRPrinter printer;
   logInfo(printer.print(kernel));
@@ -718,7 +871,7 @@ void solveExample() {
 #endif LOCAL
 
   Boost::Internal::IRPrinter printer;
-  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"]));
+  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"], j["grad_to"]));
   
   std::string cheat_src =
       "// this is supposed to be generated by codegen tool\n\
@@ -756,7 +909,7 @@ void solveCase(int idx) {
   printList(tokenList);
 #endif LOCAL
   Boost::Internal::IRPrinter printer;
-  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"]));
+  std::string src = printer.print(kernel2IR(tokenList, j["name"], j["ins"], j["outs"], j["data_type"], j["grad_to"]));
   std::ofstream ofile("./kernels/" + outputFileName + ".cc", std::ios::out);
   ofile << "#include \"../run2.h\"\n";
   ofile << src;
