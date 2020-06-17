@@ -257,6 +257,30 @@ std::vector<std::vector<std::vector<node> > > parseKernel(
 namespace lym_helpers {
 using namespace Boost::Internal;
 
+struct scheduler {
+  struct Base {
+    virtual ~Base() {}
+  };
+  Base *object = nullptr;
+  template <class F> struct true_scheduler: Base {
+    F ed;
+    template <class G>
+    true_scheduler(G op_, F ed_): ed(std::move(ed_)) {
+      op_();
+    }
+    virtual ~true_scheduler() {
+      ed();
+    }
+  };
+  template <class F, class G>
+  scheduler(F op_, G ed_) {
+    object = new true_scheduler<G>(op_, ed_);
+  }
+  ~scheduler() {
+    delete object;
+  }
+};
+
 template <class T1, class T2>
 void map_add_2_into_1(std::map<T1, T2> &m1, const std::map<T1, T2> &m2) {
   for (const auto &p : m2) {
@@ -322,6 +346,11 @@ Type int_type = Type::int_scalar(32), float_type = Type::float_scalar(32);
 Expr zero_of(Type t) {
   if (t == int_type) return IntImm::make(int_type, 0);
   if (t == float_type) return FloatImm::make(float_type, 0);
+  return Expr(); 
+}
+Expr one_of(Type t) {
+  if (t == int_type) return IntImm::make(int_type, 1);
+  if (t == float_type) return FloatImm::make(float_type, 1);
   return Expr(); 
 }
 Expr build_number(const node &n, bool gen_float = true) {
@@ -656,19 +685,49 @@ struct statement_gradients {
       Stmt looped = s->mutate_stmt(&replacer);
       return LoopNest::make(temp_indices.gen_indices({data_types}), {looped});
     };
+    struct hole_filler: IRMutator {
+      Expr filled;
+      hole_filler(Expr filled_): filled(filled_) { }
+      virtual Expr visit(Ref<const Unary> u) {
+        Expr a = u->a.defined() ? u->a->mutate_expr(this) : filled;
+        return Unary::make(u->type(), u->op_type, a);
+      }
+      virtual Expr visit(Ref<const Binary> op) {
+        Expr a = op->a.defined() ? op->a->mutate_expr(this) : filled;
+        Expr b = op->b.defined() ? op->b->mutate_expr(this) : filled;
+        return Binary::make(op->type(), op->op_type, a, b);
+      }
+      virtual Expr visit(Ref<const Cast> op) {
+        Expr val = op->val.defined()? op->val->mutate_expr(this) : filled;
+        return Cast::make(op->type(), op->new_type, val);
+      }
+    };
     struct backward: IRVisitor {
       std::vector<std::pair<Expr, Expr>> known_results;
-      std::stack<Expr> gradients;
+      std::stack<Expr> gradient;
       std::string grad_to;
       backward(const std::string &grad_to_, Expr initial_grad): grad_to(grad_to_) {
-        gradients.push(initial_grad);
+        gradient.push(Binary::make(initial_grad->type(), BinaryOpType::Mul, initial_grad, Expr()));
+      }
+      scheduler replace(Expr newer) {
+        Expr t = gradient.top();
+        return scheduler(
+          [&]() {
+            gradient.pop();
+            gradient.push(newer);
+          },
+          [=]() {
+            this->gradient.pop();
+            this->gradient.push(t);
+          });
       }
       virtual void visit(Ref<const Unary> op) {
         switch (op->op_type) {
           case UnaryOpType::Neg: {
-            gradients.push(Unary::make(gradients.top()->type(), UnaryOpType::Neg, gradients.top()));
+            Expr negged = Unary::make(gradient.top()->type(), UnaryOpType::Neg, Expr());
+            hole_filler filler{negged};
+            auto _ = replace(gradient.top()->mutate_expr(&filler));
             op->a.visit_expr(this);
-            gradients.pop();
           }
           default: assert(false);
         }
@@ -682,36 +741,43 @@ struct statement_gradients {
           }
           case BinaryOpType::Sub: {
             op->a.visit_expr(this);
-            gradients.push(Unary::make(gradients.top()->type(), UnaryOpType::Neg, gradients.top()));
+            hole_filler filler{Unary::make(gradient.top()->type(), UnaryOpType::Neg, Expr())};
+            auto _ = replace(gradient.top()->mutate_expr(&filler));
             op->b.visit_expr(this);
-            gradients.pop();
             break;
           }
           case BinaryOpType::Mul: {
-            Type type = gradients.top()->type();
-            gradients.push(Binary::make(type, BinaryOpType::Mul, gradients.top(), op->b));
-            op->a.visit_expr(this);
-            gradients.pop();
-            gradients.push(Binary::make(type, BinaryOpType::Mul, gradients.top(), op->a));
-            op->b.visit_expr(this);
-            gradients.pop();
+            Type type = gradient.top()->type();
+            {
+              hole_filler filler{Binary::make(type, BinaryOpType::Mul, op->b, Expr())};
+              auto _ = replace(gradient.top()->mutate_expr(&filler));
+              op->a.visit_expr(this);
+            }
+            {
+              hole_filler filler{Binary::make(type, BinaryOpType::Mul, op->a, Expr())};
+              auto _ = replace(gradient.top()->mutate_expr(&filler));
+              op->b.visit_expr(this);
+            }
             break;
           }
           case BinaryOpType::Div: {
-            Type type = gradients.top()->type();
-            gradients.push(Binary::make(type, BinaryOpType::Div, gradients.top(), op->b));
-            op->a.visit_expr(this);
-            gradients.pop();
-            gradients.push(Unary::make(type, UnaryOpType::Neg,
-              Binary::make(type, BinaryOpType::Div,
-                Binary::make(type, BinaryOpType::Mul,
-                  gradients.top(),
-                  op->a),
-                Binary::make(type, BinaryOpType::Mul,
-                  op->b,
-                  op->b))));
-            op->b.visit_expr(this);
-            gradients.pop();
+            Type type = gradient.top()->type();
+            {
+              hole_filler filler{Binary::make(type, BinaryOpType::Div, Expr(), op->b)};
+              auto _ = replace(gradient.top()->mutate_expr(&filler));
+              op->a.visit_expr(this);
+            }
+            {
+              hole_filler filler{Binary::make(type, BinaryOpType::Mul, op->a, 
+                Unary::make(type, UnaryOpType::Neg,
+                  Binary::make(type, BinaryOpType::Div,
+                    Expr(),
+                    Binary::make(type, BinaryOpType::Mul,
+                      op->b,
+                      op->b))))};
+              auto _ = replace(gradient.top()->mutate_expr(&filler));
+              op->b.visit_expr(this);
+            }
             break;
           }
           default: assert(false);
@@ -719,7 +785,8 @@ struct statement_gradients {
       }
       virtual void visit(Ref<const Var> v) {
         if (v->name != grad_to) return;
-        known_results.emplace_back(v, gradients.top());
+        hole_filler filler{one_of(v->type())};
+        known_results.emplace_back(v, gradient.top()->mutate_expr(&filler));
       }
     };
     add_name add_d{"d"};
