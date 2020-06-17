@@ -5,10 +5,6 @@ file(GLOB clean_src "./clean/*.cc")
 
 include_directories("../include")
 
-# set(JSON_BuildTests OFF CACHE INTERNAL "")
-
-# add_subdirectory("./json")
-
 add_executable(test2 ${test_src} ${kernel_src})
 add_executable(solution2 ${solution_src})
 target_link_libraries(solution2 PRIVATE nlohmann_json::nlohmann_json ${LIB_NAME})
