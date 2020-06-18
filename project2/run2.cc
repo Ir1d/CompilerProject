@@ -3,7 +3,7 @@
 
 #include "run2.h"
 
-const double eps = 1e-5;
+const double eps = 1e-4;
 
 
 bool test_case1(std::mt19937 &gen, std::uniform_real_distribution<float> &dis) {
@@ -223,7 +223,7 @@ bool test_case5(std::mt19937 &gen, std::uniform_real_distribution<float> &dis) {
         for (int j = 0; j < 32; ++j) {
             for (int k = 0; k < 32; ++k) {
                 for (int l = 0; l < 4; ++l) {
-                    golden[i][k][l] +=  dA[i][j] * C[k][j] * D[l][j];
+                    golden[i][k][l] +=  dA[i][j] * (C[k][j] * D[l][j]);
                 }
             }
         }
