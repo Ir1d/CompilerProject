@@ -4,8 +4,6 @@
 
 [Q.md](./Q.md) 是我们自己造的 testcase
 
-Overleaf 上的 project report 地址： https://www.overleaf.com/1833157533mmyckckhwsrp
-
 ## Change Log
 - [5.6] 引入 json 库
 - [5.6] 将 testcase 的测试也加入 Github actions
